@@ -1,0 +1,17 @@
+# Optional Prefect layer (v4). Its own project and lock file, so Prefect's dependencies
+# never mix with the pipeline's: removing this folder, its compose services and its make
+# targets removes Prefect without touching anything else.
+[project]
+name = "arkham-orchestration"
+version = "0.1.0"
+description = "Prefect flows that wrap the arkham CLI: retries and a run view."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "prefect==3.9.1",
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.group.dev.dependencies]
+pytest = "9.2.0"
