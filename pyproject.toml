@@ -1,0 +1,51 @@
+[project]
+name = "arkham-process-delta-pipeline"
+version = "0.1.0"
+description = "Multi-tenant lakehouse for the Arkham Platform Engineering Assessment: an incremental medallion pipeline on PySpark and Delta Lake."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+# Spark, Delta and GraphFrames must share a Spark minor version (4.1). The Delta and
+# GraphFrames JARs are pinned separately in src/arkham/spark_packages.py (locked in
+# docker/pipeline/spark-jars.lock); change both together. PYSPARK_VERSION in
+# docker/pipeline/Dockerfile must match the pyspark pin (the build checks it).
+dependencies = [
+    "pyspark==4.1.4",
+    "delta-spark==4.4.1",
+    "graphframes-py==0.12.3",
+    # graphframes-py imports typing_extensions on Python 3.11 and pyspark.ml (which needs
+    # numpy, pyspark's "ml" extra) without declaring either.
+    "typing-extensions==4.15.0",
+    "numpy==2.3.1",
+]
+
+[tool.poetry]
+packages = [{ include = "arkham", from = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "9.2.0"
+black = "26.10.1"
+ruff = "0.17.3"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+# legacy_sources/ is provided by the assessment and must never be modified, so
+# neither formatter nor linter touches it.
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = "^/legacy_sources/"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["legacy_sources"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]

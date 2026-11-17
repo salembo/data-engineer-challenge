@@ -1,0 +1,193 @@
+name: arkham
+
+# Source services (the legacy ERP and the partner event gateway, run from
+# legacy_sources/ without modifying it) stay up; the pipeline container runs on
+# demand. Every value below has a default, so a clean clone works without a
+# .env file; see .env.example to override them.
+
+x-source-service: &source-service
+  # Assessment limit for auxiliary source services: 512 MB each, no swap.
+  mem_limit: 512m
+  memswap_limit: 512m
+  restart: unless-stopped
+
+services:
+  erp-db:
+    <<: *source-service
+    image: postgres:16.16-alpine3.24
+    environment:
+      POSTGRES_DB: ${ERP_DB_NAME:-arkham}
+      POSTGRES_USER: ${ERP_DB_ADMIN_USER:-arkham}
+      POSTGRES_PASSWORD: ${ERP_DB_ADMIN_PASSWORD:-arkham}
+      ERP_DB_READER_USER: ${ERP_DB_READER_USER:-arkham_reader}
+      ERP_DB_READER_PASSWORD: ${ERP_DB_READER_PASSWORD:-arkham_reader}
+      TZ: UTC
+      PGTZ: UTC
+    command:
+      - postgres
+      - -c
+      - timezone=UTC
+      - -c
+      - log_timezone=UTC
+      # Bounds per-connection memory under the 512 MB limit, including parallel
+      # JDBC reads from Spark.
+      - -c
+      - max_connections=20
+    volumes:
+      # Init scripts run in alphabetical order, only when the data volume is empty.
+      - ./legacy_sources/erp_db/init_erp.sql:/docker-entrypoint-initdb.d/01_init_erp.sql:ro
+      - ./docker/erp_db/02_create_reader_role.sh:/docker-entrypoint-initdb.d/02_create_reader_role.sh:ro
+      - erp_db_data:/var/lib/postgresql/data
+    ports:
+      # Bound to localhost for exploration. 5433 by default because 5432 is often
+      # taken by a local Postgres.
+      - "127.0.0.1:${ERP_DB_HOST_PORT:-5433}:5432"
+    healthcheck:
+      # TCP check on purpose: during initialization the temporary server listens
+      # only on the unix socket, so the service turns healthy only after both
+      # init scripts have finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  partner-api:
+    <<: *source-service
+    build:
+      context: .
+      dockerfile: docker/partner_api/Dockerfile
+    # Tag matches the gateway version declared in legacy_sources/partner_api/main.py.
+    image: arkham-partner-api:1.4.2
+    ports:
+      - "127.0.0.1:${PARTNER_API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/pipeline/Dockerfile
+      # The Dockerfile's later stages belong to the optional Prefect layer.
+      target: runtime
+      args:
+        # Set by the Makefile from `id -u` / `id -g`; see docker/pipeline/Dockerfile.
+        APP_UID: ${HOST_UID:-10001}
+        APP_GID: ${HOST_GID:-10001}
+    image: arkham-pipeline:0.1.0
+    # Not started by `docker compose up`: it runs on demand with `docker compose run`.
+    profiles: ["pipeline"]
+    # Assessment limit for the processing runtime: 2 GB, no swap.
+    mem_limit: 2g
+    memswap_limit: 2g
+    depends_on:
+      erp-db:
+        condition: service_healthy
+      partner-api:
+        condition: service_healthy
+    environment: &pipeline-environment
+      ARKHAM_ERP_JDBC_URL: jdbc:postgresql://erp-db:5432/${ERP_DB_NAME:-arkham}
+      ARKHAM_ERP_USER: ${ERP_DB_READER_USER:-arkham_reader}
+      ARKHAM_ERP_PASSWORD: ${ERP_DB_READER_PASSWORD:-arkham_reader}
+      ARKHAM_PARTNER_API_URL: http://partner-api:8000
+      ARKHAM_LANDING_ROOT: /app/landing
+      ARKHAM_LAKEHOUSE_ROOT: /app/lakehouse
+      ARKHAM_FALLBACK_ROOT: /app/fallback
+      ARKHAM_CONFIG: /app/config/pipeline.toml
+      # JVM heap; the rest of the 2 GB covers JVM overhead, Python and the OS.
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-1g}
+      # glibc otherwise creates up to 8 malloc arenas per core, inflating the JVM's
+      # resident memory on many-core hosts.
+      MALLOC_ARENA_MAX: "2"
+      SPARK_MASTER: ${SPARK_MASTER:-local[2]}
+    volumes:
+      # Code is mounted so changes need no rebuild; the image keeps its own copy.
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./scripts:/app/scripts:ro
+      # Window calendar and source settings: editable without a rebuild.
+      - ./config:/app/config:ro
+      # Committed fixtures for public-source failures (written only by `make capture-fallback`).
+      - ./fallback:/app/fallback
+      # Pipeline output, inspectable from the host.
+      - ./landing:/app/landing
+      - ./lakehouse:/app/lakehouse
+      # Read-only: the baseline checks (`make verify-v1/v2/v3`) compare these files with the
+      # versions provided with the assessment.
+      - ./legacy_sources:/app/legacy_sources:ro
+
+  # ---- Optional orchestration layer (v4): Prefect ----
+  # Profile "orchestration": `make up` and `make build` never start or build these, and
+  # removing them (with orchestration/ and the prefect-* make targets) touches nothing else.
+
+  # Prefect's API and UI (run view at http://localhost:4200), with its state in SQLite.
+  prefect-server:
+    image: arkham-orchestrator:0.1.0
+    profiles: ["orchestration"]
+    command: ["/opt/prefect/bin/prefect", "server", "start", "--host", "0.0.0.0", "--port", "4200"]
+    <<: *source-service
+    environment:
+      PREFECT_HOME: /home/app/prefect
+      # The server writes the UI's static files with the API address; the package
+      # directory is read-only for the app user.
+      PREFECT_UI_STATIC_DIRECTORY: /home/app/prefect/ui
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      # The address the browser uses to reach the API.
+      PREFECT_UI_API_URL: http://localhost:${PREFECT_HOST_PORT:-4200}/api
+    ports:
+      - "127.0.0.1:${PREFECT_HOST_PORT:-4200}:4200"
+    volumes:
+      - prefect_data:/home/app/prefect
+    healthcheck:
+      test:
+        - CMD
+        - /opt/prefect/bin/python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health', timeout=5)
+      interval: 5s
+      timeout: 6s
+      retries: 30
+      start_period: 10s
+
+  # Runs the Prefect flows (orchestration/flows.py); each flow step runs the pipeline CLI
+  # in its own process, with the pipeline's settings and the same 2 GB limit.
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/pipeline/Dockerfile
+      target: orchestrator
+      args:
+        APP_UID: ${HOST_UID:-10001}
+        APP_GID: ${HOST_GID:-10001}
+    image: arkham-orchestrator:0.1.0
+    profiles: ["orchestration"]
+    mem_limit: 2g
+    memswap_limit: 2g
+    depends_on:
+      erp-db:
+        condition: service_healthy
+      partner-api:
+        condition: service_healthy
+      prefect-server:
+        condition: service_healthy
+    environment:
+      <<: *pipeline-environment
+      PREFECT_API_URL: http://prefect-server:4200/api
+    volumes:
+      # The pipeline's mounts, plus the flows.
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./scripts:/app/scripts:ro
+      - ./config:/app/config:ro
+      - ./fallback:/app/fallback
+      - ./landing:/app/landing
+      - ./lakehouse:/app/lakehouse
+      - ./orchestration:/app/orchestration:ro
+
+volumes:
+  erp_db_data:
+  prefect_data:

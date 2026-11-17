@@ -1,0 +1,16 @@
+# Keep the build context small: no VCS metadata, local config or pipeline data.
+.git
+.env
+**/.DS_Store
+**/__pycache__
+**/*.py[cod]
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+landing
+lakehouse
+spark-warehouse
+metastore_db
+derby.log
