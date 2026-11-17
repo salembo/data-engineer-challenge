@@ -1,0 +1,6 @@
+{
+  "captured_at": "2026-11-13",
+  "description": "Rows of the Open Food Facts dump (en.openfoodfacts.org.products.csv.gz) whose barcode is one of the 18 real codes in the ERP, with the dump's header line and all of its columns, tab-separated as in the original file.",
+  "rows": 18,
+  "source": "https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz"
+}

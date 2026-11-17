@@ -1,0 +1,708 @@
+# Data catalog registry (docs/PRD v2-v4 Arkham Data Platform.md, v3 data catalog).
+#
+# The catalog tables (catalog.datasets, columns, lineage, freshness) are generated from
+# this file at the end of every run. It declares what each table is: description, scope,
+# isolation column, key, load pattern, lineage and personal data. Column names and types
+# are never declared here: the catalog reads them from the Delta tables themselves.
+#
+# Every Delta table in the lakehouse must have an entry, and every entry must match a
+# table in src/arkham/lakehouse.py (same name and scope); otherwise the run fails.
+
+# ---------------------------------------------------------------------------
+# Source objects: where data enters the platform (the roots of the lineage)
+# ---------------------------------------------------------------------------
+[sources."erp.tenants"]
+system = "ERP"
+location = "PostgreSQL arkham_erp.tenants"
+description = "Tenant workspaces, including the load-test sandbox."
+
+[sources."erp.locations"]
+system = "ERP"
+location = "PostgreSQL arkham_erp.locations"
+description = "Plants, distribution centers, stores and the sandbox buffer, with their parent supply node."
+
+[sources."erp.products"]
+system = "ERP"
+location = "PostgreSQL arkham_erp.products"
+description = "Product master: barcode, category, supplier plant, substitute and low-code attributes."
+
+[sources."erp.inventory_ledger"]
+system = "ERP"
+location = "PostgreSQL arkham_erp.inventory_ledger"
+description = "Inventory movements, assigned to a window by ingested_at."
+
+[sources."partner_api.events"]
+system = "Partner API"
+location = "GET /v1/events"
+description = "Point-of-sale checkouts and shelf audit scans, read by sequence cursor."
+
+[sources."open_food_facts.dump"]
+system = "Open Food Facts"
+location = "https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz"
+description = "Global product dataset: taxonomy, brand ownership, nutritional grade and processing class."
+
+[sources."open_food_facts.product_api"]
+system = "Open Food Facts"
+location = "GET https://world.openfoodfacts.org/api/v2/product/{barcode}.json"
+description = "Live product lookup for each ERP barcode."
+
+[sources."open_prices.prices"]
+system = "Open Prices"
+location = "GET https://prices.openfoodfacts.org/api/v1/prices"
+description = "Crowd-sourced retail prices; carries contributor usernames (personal data)."
+
+# ---------------------------------------------------------------------------
+# Column glossary: the description of a column wherever it appears, unless a
+# table overrides it in its own `columns` section
+# ---------------------------------------------------------------------------
+[columns]
+# Control and lineage columns
+_window_id = "Window the row arrived in (bronze partition); for silver facts, the window of the current version."
+_run_id = "Run that last wrote the row."
+_loaded_at = "When the row was last written, in UTC."
+_source = "Source system and object the row comes from."
+_row_hash = "Hash of the row's content; a MERGE rewrites the row only when it changes."
+_snapshot_date = "Date of the Open Food Facts dump snapshot (bronze partition)."
+_snapshot_window_id = "Window whose ERP snapshot the row comes from."
+raw_json = "The record exactly as the source returned it, as JSON text."
+# Tenancy
+tenant_id = "Tenant the row belongs to; in facts, the tenant that recorded the fact. Defines isolation."
+location_owner_tenant_id = "Tenant that owns the store in the ERP; can differ from the recording tenant."
+product_owner_tenant_id = "Tenant that owns the product in the ERP; can differ from the recording tenant."
+tenant_slug = "Short tenant name."
+company_name = "Legal name of the tenant's company."
+tier = "Commercial tier of the workspace."
+workspace_env = "Workspace environment; SANDBOX values mark the load-test sandbox."
+region = "Region of the workspace."
+is_active = "Whether the workspace is active."
+is_sandbox = "True for a sandbox workspace (from workspace_env); its facts never reach silver facts or gold."
+# Locations
+location_id = "Location (plant, distribution center or store) ID."
+location_type = "SUPPLIER_PLANT, REGIONAL_DC, RETAIL_STORE or VIRTUAL_POOL."
+parent_supply_node_id = "Location this one is supplied by."
+parent_exists = "Whether the parent supply node is itself a known location (null when there is no parent)."
+banner_name = "Retail banner or site name."
+country_code = "ISO country code of the location."
+postal_code = "Postal code of the location."
+operating_status = "OPEN or RENOVATION_HOLD."
+# Products
+product_id = "Product ID in the ERP master."
+internal_sku = "Tenant's internal SKU."
+gtin_barcode = "Barcode as the ERP stores it."
+gtin_raw = "Barcode as received."
+gtin14 = "Barcode normalized to GTIN-14 (digits only, left-padded); null when longer than 14 significant digits."
+gtin_status = "VALID, INVALID_CHECK_DIGIT, TOO_LONG or INVALID."
+product_name = "Product name."
+category_code = "Product category."
+primary_supplier_id = "Plant that supplies the product."
+primary_supplier_location_id = "Plant that supplies the product (a location)."
+substitute_product_id = "Product the ERP suggests as its substitute."
+unit_cost_cents = "Unit cost in cents; the ERP declares no currency."
+retail_price_cents = "Retail price in cents; the ERP declares no currency."
+currency = "ISO currency of the amounts in the row; amounts are never added across currencies."
+lowcode_attributes = "Tenant-defined low-code attributes, as JSON text."
+pack_size_units = "Pack size as a number of units, when the attribute is a number or a numeric text."
+pack_size_raw = "Pack size as received, whatever its shape."
+uom = "Unit of measure."
+shelf_life_days = "Shelf life in days."
+promo_eligible = "Whether the product can be promoted."
+temp_zone = "Storage temperature zone."
+custom_tags = "Tenant-defined tags."
+is_discontinued = "Whether the product is discontinued."
+created_at = "Creation time in the source, in UTC."
+updated_at = "Last update in the source, in UTC."
+# Inventory ledger
+ledger_entry_id = "Inventory ledger entry ID."
+movement_type = "Movement type as recorded (RECEIPT, REPLENISHMENT_OUT, STORE_ALLOCATION, SHRINKAGE, ADJUSTMENT)."
+quantity_delta = "Units moved: positive inbound, negative outbound."
+entry_status = "Ledger status as recorded; only POSTED_00 counts in gold."
+movement_status = "Normalized status: POSTED, VOIDED, PENDING or DUPLICATE_REPLAY."
+is_posted = "True for POSTED_00 entries, the only ones that count in gold."
+reference_doc_id = "Business document the entry refers to."
+is_reference_doc_reused = "Another ledger entry carries the same document; both are kept and flagged."
+is_deleted = "Soft-delete flag from the source."
+event_occurred_at = "Business time of the event, in UTC."
+ingested_at = "Arrival time at the source, in UTC; decides the window."
+is_late_arriving = "The business time is earlier than the window the row arrived in."
+lowcode_workflow_meta = "Low-code workflow metadata, as JSON text."
+workflow_run_id = "Low-code workflow run that produced the entry."
+workflow_schema_version = "Schema version of the low-code workflow."
+# Partner events
+event_id = "Business event ID; revisions share it."
+sequence_cursor = "Delivery cursor of the partner API; unique per delivery."
+revision = "Revision number of the event; the highest one is current."
+product_gtin14 = "GTIN-14 of the product in the ERP master."
+event_gtin_raw = "Barcode as the event carried it."
+event_gtin14 = "Event barcode normalized to GTIN-14."
+event_gtin_status = "Status of the event barcode."
+units_sold = "Units sold on the sale line."
+unit_price_cents = "Unit price in cents."
+units_observed = "Units observed on the shelf by the audit."
+shelf_price_cents = "Shelf price observed by the audit, in cents."
+discount_rate = "Discount as a fraction between 0 and 1 (\"15%\" becomes 0.15)."
+promo_campaign_id = "Promotion campaign; NONE in gold when the line has no promotion."
+promo_mechanic_type = "Promotion mechanic; NONE in gold when the line has no promotion."
+promo_co_funded_ratio = "Share of the discount funded by the manufacturer."
+record_state = "ACTIVE or CANCELLED_VOID; only ACTIVE sales count in gold."
+is_cancelled = "True for CANCELLED_VOID."
+source_batch_window = "Batch window label sent by the partner API (not used to assign windows)."
+# Public product data
+code = "Barcode as the public source returns it."
+status = "Product API status: 1 when the product was found."
+created_t = "Creation time in Open Food Facts, as Unix seconds."
+last_modified_t = "Last edit in Open Food Facts, as Unix seconds."
+quantity = "Package quantity as written on the product."
+brands = "Brands, comma-separated."
+brands_tags = "Normalized brand tags."
+brand_owner = "Company that owns the brand."
+brand_owner_resolved = "brand_owner, or the first brand when brand_owner is empty."
+categories_tags = "Normalized category tags."
+main_category = "Main Open Food Facts category."
+nutriscore_grade = "Nutri-Score grade (a to e)."
+nova_group = "NOVA processing group (1 to 4)."
+last_modified_at = "Last edit of the winning version, in UTC."
+source = "Public source whose version won: dump or api."
+# Public prices
+id = "Open Prices price ID."
+created = "Creation time of the price in Open Prices."
+product_code = "Barcode the price was recorded for."
+price_type = "Open Prices price type (PRODUCT)."
+price_cents = "Price in cents."
+price_without_discount_cents = "Price before discount, in cents."
+price_is_discounted = "Whether the price was discounted."
+discount_type = "Kind of discount on the price."
+price_per = "Unit the price refers to, when given."
+receipt_quantity = "Quantity on the receipt."
+price_date = "Date the price was observed."
+location_osm_id = "OpenStreetMap ID of the shop."
+location_osm_type = "OpenStreetMap element type of the shop."
+location_name = "Shop name."
+location_city = "Shop city."
+location_country = "Shop country."
+location_country_code = "Shop ISO country code."
+proof_type = "Kind of proof behind the price (receipt, price tag)."
+source_partition = "Bronze partition of the winning version (a window or baseline)."
+# Platform
+source_table = "Bronze table the record comes from."
+record_key = "Key of the record in its source table."
+target_table = "Silver table the record was meant for."
+window_id = "Window the row describes; for reference loads, the bronze partition (baseline or the dump date)."
+reason = "Every rule the record failed."
+raw_record = "The record as it was, for inspection."
+run_id = "Run ID."
+command = "Command of the run: run, reference, rebuild-silver or rebuild-gold."
+started_at = "When the run started, in UTC."
+finished_at = "When the run finished, in UTC."
+fallback_sources = "Public sources that used a fallback, and which one."
+error_message = "Error of a failed run."
+table_name = "Table, as layer.table."
+outcome = "read, written, quarantined, filtered, superseded or flagged."
+rows = "Number of rows."
+detail = "Context of the count."
+
+# ---------------------------------------------------------------------------
+# Bronze: sources as received
+# ---------------------------------------------------------------------------
+[tables."bronze.erp_tenants"]
+description = "Full snapshot of the ERP tenants, once per window, with the ERP's types."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["_window_id", "tenant_id"]
+load_pattern = "snapshot"
+upstream = ["erp.tenants"]
+transformation = "JDBC read of the whole table as the read-only role; partition replaced per window."
+
+[tables."bronze.erp_locations"]
+description = "Full snapshot of the ERP locations, once per window."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["_window_id", "location_id"]
+load_pattern = "snapshot"
+upstream = ["erp.locations"]
+transformation = "JDBC read of the whole table; partition replaced per window."
+
+[tables."bronze.erp_products"]
+description = "Full snapshot of the ERP product master, once per window."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["_window_id", "product_id"]
+load_pattern = "snapshot"
+upstream = ["erp.products"]
+transformation = "JDBC read of the whole table; JSONB attributes kept as text."
+
+[tables."bronze.erp_inventory_ledger"]
+description = "Inventory movements that arrived in each window, sandbox and invalid rows included."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["ledger_entry_id"]
+load_pattern = "incremental"
+upstream = ["erp.inventory_ledger"]
+transformation = "JDBC range read on ingested_at within the window; partition replaced per window."
+
+[tables."bronze.partner_events"]
+description = "Partner deliveries (sales and shelf audits) that arrived in each window, as raw JSON."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["sequence_cursor"]
+load_pattern = "incremental"
+upstream = ["partner_api.events"]
+transformation = "Read by since_cursor from the landed responses; key fields and tenant extracted from the JSON."
+
+[tables."bronze.off_products"]
+description = "Rows of the Open Food Facts dump whose barcode is in the ERP: eleven text columns."
+scope = "GLOBAL"
+primary_key = ["_snapshot_date", "code"]
+load_pattern = "reference"
+upstream = ["open_food_facts.dump"]
+transformation = "Streaming read of the landed dump with an all-text schema, filtered by ERP barcode."
+
+[tables."bronze.off_product_api"]
+description = "Open Food Facts product API responses for the ERP barcodes, one snapshot per window."
+scope = "GLOBAL"
+primary_key = ["_window_id", "code"]
+load_pattern = "snapshot"
+upstream = ["open_food_facts.product_api"]
+transformation = "One lookup per ERP barcode, landed and reused on re-runs; fallback to an earlier snapshot or fixture."
+
+[tables."bronze.open_prices"]
+description = "Open Prices prices of the ERP barcodes: created in each window, plus a six-month baseline."
+scope = "GLOBAL"
+primary_key = ["_window_id", "id"]
+load_pattern = "incremental"
+upstream = ["open_prices.prices"]
+transformation = "Paged API read by created (windows) or price date (baseline), landed and reused on re-runs."
+personal_data_columns = ["raw_json"]
+
+[tables."bronze.open_prices".columns]
+raw_json = "The price as Open Prices returned it. Contains personal data: owner and owner_comment, also nested in proof. Never copied beyond bronze."
+
+# ---------------------------------------------------------------------------
+# Silver: current state, typed and resolved by key
+# ---------------------------------------------------------------------------
+[tables."silver.dim_tenant"]
+description = "Tenants from the latest ERP snapshot, with the sandbox flagged."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["tenant_id"]
+load_pattern = "snapshot"
+upstream = ["bronze.erp_tenants"]
+transformation = "Latest window's snapshot; is_sandbox from workspace_env."
+
+[tables."silver.dim_location"]
+description = "Locations from the latest ERP snapshot, with their parent supply node validated."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["location_id"]
+load_pattern = "snapshot"
+upstream = ["bronze.erp_locations"]
+transformation = "Latest window's snapshot; parent_exists checks the parent against the locations."
+
+[tables."silver.dim_product"]
+description = "Product master from the latest ERP snapshot, with GTIN-14 barcodes and typed low-code attributes."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["product_id"]
+load_pattern = "snapshot"
+upstream = ["bronze.erp_products"]
+transformation = "Barcode normalized to GTIN-14 with a status; low-code attributes typed by value shape; invalid barcodes to quarantine."
+
+[tables."silver.fact_inventory_movement"]
+description = "One row per inventory ledger entry of the real tenants, every status kept and flagged."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["ledger_entry_id"]
+load_pattern = "incremental"
+upstream = ["bronze.erp_inventory_ledger", "bronze.erp_tenants", "bronze.erp_locations", "bronze.erp_products"]
+transformation = "Sandbox excluded; owners from the window's snapshot; posted, late and reused-document flags."
+
+[tables."silver.fact_pos_sale"]
+description = "Point-of-sale lines at their newest revision, with numeric discounts and UTC dates."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["event_id"]
+load_pattern = "incremental"
+upstream = ["bronze.partner_events", "bronze.erp_tenants", "bronze.erp_locations", "bronze.erp_products"]
+transformation = "Highest (revision, sequence_cursor) wins across windows; rules checked on the current revision; failures to quarantine."
+
+[tables."silver.fact_shelf_audit"]
+description = "Shelf audit scans at their newest revision: units observed and shelf price."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["event_id"]
+load_pattern = "incremental"
+upstream = ["bronze.partner_events", "bronze.erp_tenants", "bronze.erp_locations", "bronze.erp_products"]
+transformation = "Same revision rule as sales; SHELF_AUDIT_SCAN events only."
+
+[tables."silver.ref_product_public"]
+description = "Public attributes of each ERP product (brand owner, category, Nutri-Score, NOVA) by GTIN-14."
+scope = "GLOBAL"
+primary_key = ["gtin14"]
+load_pattern = "derived"
+upstream = ["bronze.off_products", "bronze.off_product_api"]
+transformation = "Most recently edited version between dump and API (the API on a tie); nulls filled from the other source."
+
+[tables."silver.ref_public_price"]
+description = "Current version of each Open Prices price for the ERP barcodes, in cents, without personal data."
+scope = "GLOBAL"
+primary_key = ["id"]
+load_pattern = "derived"
+upstream = ["bronze.open_prices"]
+transformation = "Highest updated wins; duplicates excluded; only non-personal fields parsed from the JSON."
+
+[tables."platform.quarantine"]
+description = "Records that failed a quality rule, with every reason and the raw record."
+scope = "PLATFORM"
+primary_key = ["source_table", "record_key"]
+load_pattern = "derived"
+upstream = ["bronze.partner_events", "bronze.erp_inventory_ledger", "bronze.erp_products"]
+transformation = "Written by the silver stage; a record leaves quarantine when a valid revision replaces it."
+
+[tables."platform.run_log"]
+description = "One row per run: command, window, status, timing and the fallbacks it used."
+scope = "PLATFORM"
+primary_key = ["run_id"]
+load_pattern = "operational"
+upstream = []
+transformation = "Recorded as RUNNING at the start of a run and updated when it ends."
+
+[tables."platform.run_log".columns]
+status = "RUNNING, SUCCESS, SUCCESS_WITH_FALLBACK or FAILED."
+
+[tables."platform.run_metrics"]
+description = "Row counts of each run per table and outcome, with a per-tenant breakdown of source counts."
+scope = "PLATFORM"
+primary_key = ["run_id", "table_name", "outcome", "tenant_id"]
+load_pattern = "operational"
+upstream = []
+transformation = "Counted by each stage of a run and saved with the run."
+
+[tables."platform.run_metrics".columns]
+tenant_id = "Tenant of a per-tenant source count; null on a table's total."
+
+# ---------------------------------------------------------------------------
+# Gold: the three business domains
+# ---------------------------------------------------------------------------
+[tables."gold.inventory_position"]
+description = "Net inventory position per tenant, store and product since the first window; can be negative."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["tenant_id", "location_id", "product_id"]
+load_pattern = "derived"
+upstream = ["silver.fact_inventory_movement", "silver.dim_product", "silver.dim_location", "silver.dim_tenant"]
+transformation = "Posted entries only; quantity_delta summed with its sign; recomputed in full every run."
+
+[tables."gold.inventory_position".columns]
+inbound_units = "Units received (positive movements)."
+outbound_units = "Units sent out, lost or adjusted down (negative movements, as a positive number)."
+net_position_units = "Net change in stock since the first window."
+movement_count = "Posted movements counted."
+last_movement_at = "Business time of the latest posted movement, in UTC."
+
+[tables."gold.inventory_daily"]
+description = "Daily inventory movements per tenant, store and category, with the velocity of the period."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["tenant_id", "location_id", "category_code", "movement_date"]
+load_pattern = "derived"
+upstream = ["silver.fact_inventory_movement", "silver.dim_product", "silver.dim_tenant"]
+transformation = "Posted entries by business date; velocity = outbound units of the calendar period / its days."
+
+[tables."gold.inventory_daily".columns]
+movement_date = "Business date of the movements, in UTC."
+inbound_units = "Units received that day."
+outbound_units = "Units sent out that day."
+net_units = "Net units that day."
+movement_count = "Posted movements that day."
+period_id = "Calendar window whose date range contains the day."
+velocity_units_per_day = "Outbound units of the period divided by its days; the same on every day of the period."
+
+[tables."gold.pos_sales_daily"]
+description = "Store-level sales per day, product and currency, with public product attributes and a public price reference."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["tenant_id", "location_id", "product_id", "currency", "sale_date"]
+load_pattern = "derived"
+upstream = ["silver.fact_pos_sale", "silver.dim_product", "silver.dim_location", "silver.dim_tenant", "silver.ref_product_public", "silver.ref_public_price"]
+transformation = "ACTIVE lines only; net rounded half up per line; grouped by currency; latest comparable public price within the configured age."
+
+[tables."gold.pos_sales_daily".columns]
+sale_date = "UTC date of the sale event, not of its ingestion."
+sale_lines = "Active sale lines."
+gross_revenue_cents = "Units times unit price, in cents."
+discount_cents = "Gross minus net revenue, in cents."
+net_revenue_cents = "Revenue after discount, rounded half up per line, in cents."
+promo_sale_lines = "Lines with a promotion."
+promo_discount_cents = "Discount on lines with a promotion, in cents."
+co_funded_discount_cents = "Discount times the co-funding ratio, rounded half up per line, in cents."
+gtin14 = "GTIN-14 of the product in the ERP master, used to join public data."
+public_price_cents = "Reference public price in the same currency, in cents; never used to fill a sale."
+public_price_date = "Date of the reference public price."
+price_match_level = "COUNTRY (same currency and store country), CURRENCY (same currency, other country) or NONE."
+
+[tables."gold.pos_promo_performance"]
+description = "Promotion performance per tenant, store, currency and campaign; NONE for lines without a promotion."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["tenant_id", "location_id", "currency", "promo_campaign_id", "promo_mechanic_type"]
+load_pattern = "derived"
+upstream = ["silver.fact_pos_sale", "silver.dim_tenant"]
+transformation = "ACTIVE lines grouped by promotion; weighted average discount rate."
+
+[tables."gold.pos_promo_performance".columns]
+sale_lines = "Active sale lines."
+gross_revenue_cents = "Units times unit price, in cents."
+net_revenue_cents = "Revenue after discount, in cents."
+discount_cents = "Discount, in cents."
+avg_discount_rate = "Total discount divided by total gross revenue."
+co_funded_discount_cents = "Discount funded by the manufacturer, in cents."
+
+[tables."gold.reconciliation"]
+description = "Every source row accounted for, per window, tenant and source object; unexplained_rows must be 0."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["window_id", "tenant_id", "source_object"]
+load_pattern = "derived"
+upstream = ["bronze.erp_tenants", "bronze.erp_locations", "bronze.erp_products", "bronze.erp_inventory_ledger", "bronze.partner_events", "bronze.off_products", "bronze.off_product_api", "bronze.open_prices", "silver.dim_tenant", "silver.dim_location", "silver.dim_product", "silver.fact_inventory_movement", "silver.fact_pos_sale", "silver.fact_shelf_audit", "silver.ref_product_public", "silver.ref_public_price", "platform.quarantine", "platform.run_metrics"]
+transformation = "Each bronze row classified from the state of the tables (silver, quarantine, filtered, superseded), attributed to its arrival window."
+
+[tables."gold.reconciliation".columns]
+tenant_id = "Tenant of the rows, or GLOBAL for a public source."
+source_object = "Source object, as in catalog.lineage."
+bronze_table = "Bronze table of the source object."
+source_rows = "Rows the source delivered, counted at extraction time (run log)."
+bronze_rows = "Rows in bronze."
+silver_rows = "Rows that are the current version in silver."
+quarantined = "Rows whose current version is in quarantine."
+filtered = "Rows filtered on purpose: sandbox, duplicates, rows that are not candidates, or dump rows outside the ERP."
+superseded = "Rows replaced by a newer version, counted in the window they arrived in."
+flagged = "Rows in silver that carry a flag (late arriving, reused document, barcode)."
+unexplained_rows = "Source rows minus every explained outcome; must be 0."
+
+[tables."gold.pipeline_health"]
+description = "Pipeline health per window, tenant and silver table: counts, quarantine reasons, data-quality flags, price coverage and the run."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["window_id", "tenant_id", "table_name"]
+load_pattern = "derived"
+upstream = ["gold.reconciliation", "gold.pos_sales_daily", "platform.run_log", "platform.quarantine"]
+transformation = "The reconciliation's classified rows per silver table, plus run attributes from the run log (refreshed when the run ends)."
+
+[tables."gold.pipeline_health".columns]
+tenant_id = "Tenant of the rows, or GLOBAL for a public source."
+table_name = "Silver table the rows feed."
+source_object = "Source object the rows come from."
+rows_received = "Rows the stage received: bronze rows, plus dump rows filtered before bronze."
+written = "Rows that are the current version in the silver table."
+quarantined = "Rows whose current version is in quarantine."
+filtered = "Rows filtered on purpose."
+superseded = "Rows replaced by a newer version."
+flagged = "Current rows that carry a flag."
+quarantine_reasons = "Quarantine reasons with their row counts."
+late_arriving_rows = "Current rows that arrived after the window of their business date."
+reused_document_rows = "Current ledger rows that share a document with another entry."
+tenant_mismatch_rows = "Current fact rows whose tenant differs from the owner of the store or product."
+barcodes_valid = "Current rows with a VALID barcode."
+barcodes_invalid_check_digit = "Current rows with a wrong check digit (flagged, not rejected)."
+barcodes_too_long = "Current rows with more than 14 significant digits."
+sales_with_public_price = "Active sales with a comparable public price."
+sales_without_public_price = "Active sales without a comparable public price."
+public_price_coverage = "Share of active sales with a comparable public price."
+fallback_used = "Whether the run used a fallback for a public source."
+run_id = "Latest successful run of the window (volatile)."
+run_status = "Status of that run (volatile)."
+run_started_at = "When that run started (volatile)."
+run_duration_seconds = "How long that run took (volatile)."
+
+# ---------------------------------------------------------------------------
+# Graph: supply network and product substitution
+# ---------------------------------------------------------------------------
+[tables."graph.nodes"]
+description = "Graph nodes: every location and product of the real tenants, with its owner."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["node_id"]
+load_pattern = "derived"
+upstream = ["silver.dim_location", "silver.dim_product", "silver.dim_tenant"]
+transformation = "Locations and products without the sandbox; tenants are the owner column, not nodes."
+
+[tables."graph.nodes".columns]
+tenant_id = "Tenant that owns the node."
+node_id = "Location or product ID."
+node_type = "LOCATION or PRODUCT."
+node_subtype = "Location type, or the product's category."
+status = "Operating status of a location; ACTIVE or DISCONTINUED for a product."
+
+[tables."graph.edges"]
+description = "Graph edges, from the dependent node to the node it depends on."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["src_id", "dst_id", "edge_type"]
+load_pattern = "derived"
+upstream = ["silver.dim_location", "silver.dim_product", "graph.nodes"]
+transformation = "SUPPLIED_BY from parent_supply_node_id, SOURCED_FROM from the supplier plant, SUBSTITUTED_BY from the substitute; dangling targets dropped and counted."
+
+[tables."graph.edges".columns]
+tenant_id = "Tenant that owns the source node."
+src_id = "Dependent node."
+dst_id = "Node it depends on."
+edge_type = "SUPPLIED_BY, SOURCED_FROM or SUBSTITUTED_BY."
+dst_tenant_id = "Tenant that owns the target node."
+is_cross_tenant = "The two nodes belong to different tenants."
+
+[tables."graph.upstream_dependencies"]
+description = "Every supply node each store depends on, directly or through other nodes, and at how many hops."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["store_id", "upstream_node_id"]
+load_pattern = "derived"
+upstream = ["graph.nodes", "graph.edges"]
+transformation = "GraphFrames shortest paths from each store to every plant and distribution center along SUPPLIED_BY."
+
+[tables."graph.upstream_dependencies".columns]
+tenant_id = "Tenant that owns the store."
+store_id = "Store."
+upstream_node_id = "Plant or distribution center the store depends on."
+upstream_node_subtype = "Location type of the upstream node."
+upstream_tenant_id = "Tenant that owns the upstream node."
+hops = "Edges between the store and the upstream node."
+is_cross_tenant = "The upstream node belongs to another tenant."
+
+[tables."graph.bottlenecks"]
+description = "Supply nodes ranked by the share of stores that depend on them; the top ones are flagged as bottlenecks."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["node_id"]
+load_pattern = "derived"
+upstream = ["graph.nodes", "graph.edges", "graph.upstream_dependencies"]
+transformation = "Dependent stores, tenants and sourced products per supply node; bottleneck when the store share reaches the configured threshold."
+
+[tables."graph.bottlenecks".columns]
+tenant_id = "Tenant that owns the supply node."
+node_id = "Plant or distribution center."
+node_subtype = "Location type of the node."
+dependent_stores = "Stores that depend on the node, directly or transitively."
+direct_stores = "Stores supplied by the node directly."
+total_stores = "Stores in the network."
+dependent_tenants = "Distinct tenants that own the dependent stores."
+sourced_products = "Products whose supplier plant is the node."
+store_share = "dependent_stores divided by total_stores."
+is_bottleneck = "store_share is at or above the configured threshold (50% by default)."
+
+[tables."graph.cross_tenant_dependencies"]
+description = "Every edge where one tenant's node depends on another tenant's node."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["src_id", "dst_id", "edge_type"]
+load_pattern = "derived"
+upstream = ["graph.edges"]
+transformation = "Edges whose two nodes belong to different tenants."
+
+[tables."graph.cross_tenant_dependencies".columns]
+tenant_id = "Tenant that owns the dependent node."
+src_id = "Dependent node."
+dst_id = "Node of another tenant it depends on."
+edge_type = "SUPPLIED_BY, SOURCED_FROM or SUBSTITUTED_BY."
+dst_tenant_id = "Tenant that owns the target node."
+
+[tables."graph.substitution_paths"]
+description = "Every substitute reachable from each product, with the ordered path; the nearest active one is recommended."
+scope = "TENANT"
+tenant_column = "tenant_id"
+primary_key = ["product_id", "substitute_product_id"]
+load_pattern = "derived"
+upstream = ["graph.nodes", "graph.edges"]
+transformation = "GraphFrames shortest paths along SUBSTITUTED_BY, at most the configured hops; a visited node is never visited again."
+
+[tables."graph.substitution_paths".columns]
+tenant_id = "Tenant that owns the starting product; defines who sees the path."
+product_id = "Starting product."
+category_code = "Category of the starting product."
+substitute_product_id = "Product reachable as a substitute."
+hops = "Substitution links between the two products; more hops is a weaker match."
+path = "Ordered product IDs from the starting product to the substitute."
+substitute_tenant_id = "Tenant that owns the substitute."
+substitute_category_code = "Category of the substitute."
+substitute_is_discontinued = "Whether the substitute is discontinued."
+crosses_tenant = "Some product on the path belongs to another tenant."
+crosses_category = "Some product on the path is in another category."
+is_recommended = "The nearest substitute on the chain that is not discontinued."
+
+# ---------------------------------------------------------------------------
+# Catalog: generated from this file
+# ---------------------------------------------------------------------------
+[tables."catalog.datasets"]
+description = "One row per Delta table: what it is, its scope and isolation column, keys, load and write pattern, personal data and sources."
+scope = "PLATFORM"
+primary_key = ["table_name"]
+load_pattern = "derived"
+upstream = []
+transformation = "Generated from config/catalog.toml at the end of every run."
+
+[tables."catalog.datasets".columns]
+layer = "bronze, silver, gold, graph, catalog or platform."
+description = "What the table holds, in business terms."
+scope = "TENANT, GLOBAL or PLATFORM."
+tenant_column = "Column that defines isolation; null for global and platform tables."
+primary_key = "Columns of the table's grain."
+partition_columns = "Partitioning, if any."
+load_pattern = "snapshot, incremental, reference, derived or operational."
+write_pattern = "How the pipeline writes the table."
+contains_personal_data = "Whether the table holds personal data."
+personal_data_columns = "Columns that hold personal data."
+source_objects = "Source objects the table ultimately comes from."
+storage_location = "Path of the Delta table, relative to the repository."
+
+[tables."catalog.columns"]
+description = "One row per table and column, read from the Delta schema, with its description and flags."
+scope = "PLATFORM"
+primary_key = ["table_name", "column_name"]
+load_pattern = "derived"
+upstream = ["catalog.datasets"]
+transformation = "Delta schemas of the existing tables, with descriptions from config/catalog.toml."
+
+[tables."catalog.columns".columns]
+column_name = "Column name."
+ordinal = "Position of the column in the table."
+data_type = "Spark SQL type."
+nullable = "Whether the column accepts nulls."
+description = "What the column holds."
+is_key = "Part of the table's primary key."
+is_tenant_column = "The column that defines isolation."
+is_partition_column = "The table is partitioned by this column."
+is_personal_data = "The column holds personal data; its values never appear in the catalog."
+
+[tables."catalog.lineage"]
+description = "One row per upstream and downstream pair, from source objects to bronze, silver, gold and graph."
+scope = "PLATFORM"
+primary_key = ["upstream", "downstream"]
+load_pattern = "derived"
+upstream = ["catalog.datasets"]
+transformation = "The upstream lists of config/catalog.toml, at table level."
+
+[tables."catalog.lineage".columns]
+upstream = "Upstream table or source object."
+upstream_type = "table or source_object."
+upstream_system = "System of a source object (ERP, Partner API, Open Food Facts, Open Prices)."
+downstream = "Table built from the upstream."
+transformation = "How the downstream table is built."
+
+[tables."catalog.freshness"]
+description = "Freshness of every table per processed window: the run that processed it, rows, load time and public snapshot date."
+scope = "PLATFORM"
+primary_key = ["table_name", "window_id"]
+load_pattern = "derived"
+upstream = ["catalog.datasets", "platform.run_log"]
+transformation = "Row counts per window from each table, run attributes from the run log, snapshot dates from the landing manifests."
+
+[tables."catalog.freshness".columns]
+window_id = "Processed window."
+scope = "Scope of the table."
+row_count = "Rows attributed to the window, or the whole table when it has no window column."
+rows_scope = "window, table or runs (run log tables, not counted): what row_count counts."
+source_snapshot_date = "For global tables, the snapshot date of their public sources as of the window."
+refreshed_in = "For global tables, the window or reference load that last refreshed them."
+fallback_used = "Whether the window's run used a fallback for a public source."
+run_id = "Latest successful run of the window (volatile)."
+run_status = "Status of that run (volatile)."
+run_finished_at = "When that run finished: the load time (volatile)."
+last_loaded_at = "Latest load time of the rows counted (volatile)."

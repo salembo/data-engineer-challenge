@@ -1,0 +1,79 @@
+# Pipeline configuration. Changing this file needs no code change or rebuild:
+# the pipeline container mounts it read-only.
+
+# ---------------------------------------------------------------------------
+# Ingestion window calendar
+# ---------------------------------------------------------------------------
+# Ranges are UTC, start included and end excluded. Windows must be contiguous
+# and in chronological order. To add a window, append an entry; the pipeline
+# picks it up with `make run WINDOW=<id>` or `make run-pending`.
+
+[[windows]]
+id = "2026-10-W1"
+start = 2026-10-01T00:00:00Z
+end = 2026-10-06T00:00:00Z
+
+[[windows]]
+id = "2026-10-W2"
+start = 2026-10-06T00:00:00Z
+end = 2026-10-11T00:00:00Z
+
+[[windows]]
+id = "2026-10-W3"
+start = 2026-10-11T00:00:00Z
+end = 2026-10-16T00:00:00Z
+
+# ---------------------------------------------------------------------------
+# Public HTTP sources (Open Food Facts and Open Prices)
+# ---------------------------------------------------------------------------
+[public_http]
+user_agent = "arkham-data-platform/0.1 (data engineering assessment pipeline)"
+min_interval_seconds = 1.0   # at most one request per second
+max_retries = 3
+timeout_seconds = 60
+
+[partner_api]
+page_size = 500              # above 500 every record carries a 1 KB+ trace; above 2000 the API returns 429
+
+[open_prices]
+url = "https://prices.openfoodfacts.org/api/v1/prices"
+page_size = 100
+price_type = "PRODUCT"
+baseline_months = 6          # baseline by price date, ending at the first window's start
+
+[off_product_api]
+url = "https://world.openfoodfacts.org/api/v2/product"
+# Fields requested per product: the dump columns plus the creation date.
+fields = [
+    "code", "product_name", "quantity", "brands", "brands_tags", "brand_owner",
+    "categories_tags", "main_category", "nutriscore_grade", "nova_group",
+    "last_modified_t", "created_t",
+]
+
+[off_dump]
+url = "https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz"
+file_name = "en.openfoodfacts.org.products.csv.gz"
+# The eleven columns kept in bronze.off_products. The file is tab-separated
+# despite its .csv name, has no quoting and declares about 210 columns.
+columns = [
+    "code", "product_name", "quantity", "brands", "brands_tags", "brand_owner",
+    "categories_tags", "main_category", "nutriscore_grade", "nova_group",
+    "last_modified_t",
+]
+
+# ---------------------------------------------------------------------------
+# Gold
+# ---------------------------------------------------------------------------
+[gold]
+# The public price reference of a sale is the latest comparable price dated on
+# or before the sale date and at most this many months earlier.
+public_price_max_age_months = 6
+
+# ---------------------------------------------------------------------------
+# Supply network and product graph
+# ---------------------------------------------------------------------------
+[graph]
+max_hops = 25                  # traversals stop here, and at any node already visited
+bottleneck_store_share = 0.5   # a supply node is a bottleneck when this share of stores depends on it
+
+# The data catalog is generated from config/catalog.toml.
